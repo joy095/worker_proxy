@@ -1,7 +1,0 @@
-{
-  "name": "r2-worker-proxy",
-  "type": "javascript",
-  "workers_dev": true,
-  "compatibility_date": "2024-06-16",
-  "main": "src/index.ts"
-}

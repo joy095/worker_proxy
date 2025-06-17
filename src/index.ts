@@ -1,59 +1,51 @@
 import { Hono } from 'hono'
-import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3'
-import { config } from 'dotenv'
-import { serve } from '@hono/node-server'
-import { Readable } from 'stream'
 
-config()
+type Bindings = {
+  R2_BUCKET_NAME: R2Bucket
+}
 
-const app = new Hono()
-
-const s3 = new S3Client({
-  region: 'auto',
-  endpoint: process.env.R2_ENDPOINT_URL,
-  credentials: {
-    accessKeyId: process.env.R2_ACCESS_KEY_ID!,
-    secretAccessKey: process.env.R2_SECRET_ACCESS_KEY!,
-  },
-})
+const app = new Hono<{ Bindings: Bindings }>()
 
 app.get('/uploads/*', async (c) => {
-  const urlPath = c.req.path.replace(/^\/uploads\//, '')
-  const key = `uploads/${decodeURIComponent(urlPath)}`
+  const urlPath = decodeURIComponent(c.req.path.replace(/^\/uploads\//, ''))
+  const key = `uploads/${urlPath}`
+
+  console.log('[Fetch]', key)
+
+  if (!key || key === 'uploads/') {
+    return c.json({ error: 'Invalid path' }, 400)
+  }
 
   try {
-    const command = new GetObjectCommand({
-      Bucket: process.env.R2_BUCKET_NAME!,
-      Key: key,
-    })
+    const object = await c.env.R2_BUCKET_NAME.get(key)
 
-    const data = await s3.send(command)
-
-    if (!data.Body) {
+    if (!object || !object.body) {
       return c.json({ error: 'File not found' }, 404)
     }
 
-    const filename = key.split('/').pop()
+    const filename = key.split('/').pop() || 'download'
 
-    // 🔧 Convert Node stream to web stream
-    const webStream = Readable.toWeb(data.Body as Readable)
-
-    return new Response(webStream as unknown as ReadableStream, {
+    return new Response(object.body, {
       headers: {
-        'Content-Type': data.ContentType || 'application/octet-stream',
+        'Content-Type': object.httpMetadata?.contentType || 'application/octet-stream',
         'Content-Disposition': `inline; filename="${filename}"`,
         'Cache-Control': 'public, max-age=86400',
       },
     })
   } catch (err) {
-    console.error('Fetch Error:', err)
+    console.error('[Fetch Error]', err)
     return c.json({ error: 'Failed to fetch file' }, 500)
   }
 })
 
-serve({
-  fetch: app.fetch,
-  port: 3000
-}, (info) => {
-  console.log(`🚀 Hono server running at http://localhost:${info.port}`)
+app.get('/debug/list', async (c) => {
+  const list = await c.env.R2_BUCKET_NAME.list({ prefix: 'uploads/' })
+
+  return c.json({
+    count: list.objects.length,
+    keys: list.objects.map(obj => obj.key),
+  })
 })
+
+
+export default app
