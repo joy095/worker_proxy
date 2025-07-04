@@ -7,3 +7,7 @@ workers_dev = true
 [[r2_buckets]]
 binding = "R2_BUCKET_NAME"
 bucket_name = "service-app"
+
+[[kv_namespaces]]
+binding = "CACHE"
+id = "da719b9f938f464680ce5e32a384624e"
