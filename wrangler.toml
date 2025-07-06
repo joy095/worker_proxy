@@ -6,8 +6,10 @@ workers_dev = true
 
 [[r2_buckets]]
 binding = "R2_BUCKET_NAME"
-bucket_name = "service-app"
+bucket_name = "service-app"                       # production bucket
+preview_bucket_name = "r2-worker-proxy-preview"   # preview bucket
 
 [[kv_namespaces]]
 binding = "CACHE"
 id = "da719b9f938f464680ce5e32a384624e"
+preview_id = "afcb290639f6461480fb06cfa3c78a6b"

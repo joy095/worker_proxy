@@ -6,7 +6,9 @@
     "strict": true,
     "esModuleInterop": true,
     "outDir": "dist",
-    "types": ["@cloudflare/workers-types"]
+    "lib": ["es2020"],
+    "types": ["@cloudflare/workers-types"],
+    "skipLibCheck": true
   },
   "include": ["src"]
 }
