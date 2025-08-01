@@ -1,4 +1,4 @@
-import { Hono } from 'hono'
+import { Context, Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { rateLimiter } from 'hono-rate-limiter'
 import type { Store } from 'hono-rate-limiter'
@@ -89,21 +89,21 @@ app.use('*', async (c, next) => {
   const accept = c.req.header('accept') ?? ''
 
   // Block bots or malformed clients
-  if (!ua || /python|curl|bot|spider/i.test(ua) || !accept) {
+  if (!ua || /python|curl|bot|spider|crawler|scraper/i.test(ua) || !accept) {
     console.warn(`[BLOCK] Suspicious request from ${ip}`, { ua, accept })
-    return c.text('Forbidden: Bot or malformed client', 403)
+    return c.json({ error: 'Forbidden: Bot or malformed client' }, 403)
   }
 
   const fingerprint = `${ip}::${ua}`
 
   // Burst limiter: 10 requests per 5 seconds
   const burstKey = `burst:${fingerprint}`
-  const burst = (await c.env.CACHE.get(burstKey, { type: 'json' })) || { count: 0 }
-    ; (burst as { count: number }).count++
+  const burst = (await c.env.CACHE.get(burstKey, { type: 'json' }) as { count: number } | null) || { count: 0 }
+  burst.count++
 
-  if ((burst as { count: number }).count > 10) {
+  if (burst.count > 10) {
     console.warn(`[BURST] ${fingerprint} exceeded burst limit`)
-    return c.text('Too many requests (burst)', 429)
+    return c.json({ error: 'Too many requests (burst)' }, 429)
   }
 
   await c.env.CACHE.put(burstKey, JSON.stringify(burst), { expirationTtl: 60 })
@@ -116,7 +116,7 @@ app.use('*', async (c, next) => {
     standardHeaders: 'draft-6',
     keyGenerator: () => fingerprint,
     store,
-  })(c, next)
+  })(c as Context, next)
 })
 
 // File proxy from R2
@@ -125,16 +125,25 @@ app.get('/uploads/*', async (c) => {
   const key = `uploads/${urlPath}`
 
   if (!key || key === 'uploads/') {
-    return c.json({ error: 'Invalid path' }, 400)
+    console.error(`[UPLOADS] Invalid path: ${key}`)
+    return c.json({ error: 'Invalid path', path: c.req.path, key }, 400)
   }
 
   try {
     const object = await c.env.R2_BUCKET_NAME.get(key)
     if (!object?.body) {
-      return c.json({ error: 'File not found' }, 404)
+      console.error(`[UPLOADS] File not found in R2: ${key}`)
+
+      // Debug: List files with similar prefix
+      const list = await c.env.R2_BUCKET_NAME.list({ prefix: `uploads/${urlPath.split('/')[0]}` })
+      console.log(`[UPLOADS] Similar files:`, list.objects.map(o => o.key))
+
+      return c.json({ error: 'File not found', key, similarFiles: list.objects.map(o => o.key) }, 404)
     }
 
     const filename = key.split('/').pop() || 'download'
+    console.log(`[UPLOADS] Successfully serving: ${key}`)
+
     return new Response(object.body, {
       headers: {
         'Content-Type': object.httpMetadata?.contentType || 'application/octet-stream',
@@ -144,8 +153,8 @@ app.get('/uploads/*', async (c) => {
       },
     })
   } catch (err) {
-    console.error('[Fetch Error]', err)
-    return c.json({ error: 'Failed to fetch file' }, 500)
+    console.error('[UPLOADS] R2 Error:', err)
+    return c.json({ error: 'Failed to fetch file', details: err instanceof Error ? err.message : 'Unknown error' }, 500)
   }
 })
 
