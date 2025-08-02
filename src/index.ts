@@ -89,10 +89,33 @@ app.use('*', async (c, next) => {
   const ua = c.req.header('user-agent') ?? ''
   const accept = c.req.header('accept') ?? ''
 
-  // Block bots or malformed clients
-  if (!ua || /python|curl|bot|spider|crawler|scraper/i.test(ua) || !accept) {
-    console.warn(`[BLOCK] Suspicious request from ${ip}`, { ua, accept })
-    return c.json({ error: 'Forbidden: Bot or malformed client' }, 403)
+  const isUploadRequest = c.req.path.startsWith('/uploads/');
+  const hasImageAccept = accept.toLowerCase().includes('image');
+  const isLikelyImageRequest = isUploadRequest || hasImageAccept; // Prioritize path check
+
+  // 2. More nuanced bot detection
+  //    - Only apply strict UA checks if it doesn't look like a normal image request
+  const isBlockedUA = /python|curl|bot|spider|crawler|scraper/i.test(ua) && !isLikelyImageRequest;
+
+  // 3. Block only if:
+  //    - No User-Agent AND it's not an obvious image request (extra caution)
+  //    - Blocked User-Agent AND it's not an obvious image request
+  //    - No Accept header AND it's not an obvious image request
+  //    - (Optional) Add extra checks for malformed requests if needed
+  if (
+    (!ua && !isLikelyImageRequest) ||
+    isBlockedUA ||
+    (!accept && !isLikelyImageRequest)
+  ) {
+    console.warn(`[BLOCK] Suspicious request from ${ip}`, {
+      ua,
+      accept,
+      path: c.req.path,
+      isUploadRequest,
+      hasImageAccept,
+      isLikelyImageRequest,
+    });
+    return c.json({ error: 'Forbidden: Bot or malformed client' }, 403);
   }
 
   const fingerprint = `${ip}::${ua}`
