@@ -15,6 +15,7 @@ const app = new Hono<{ Bindings: Bindings }>()
 app.use('*', cors({
   origin: [
     'https://mail-2-2qez.vercel.app',
+    'https://service-client-7pw.pages.dev',
     'http://localhost:5173',
     'http://localhost:8081',
     'http://localhost:8082',
