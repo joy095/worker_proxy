@@ -6,8 +6,9 @@ import type { Store } from 'hono-rate-limiter'
 // Fixed Bindings type for Cloudflare Workers
 type Bindings = {
   R2_BUCKET_NAME: R2Bucket
-  CACHE: KVNamespace
+  DB: D1Database
 }
+
 
 const app = new Hono<{ Bindings: Bindings }>()
 
@@ -16,9 +17,6 @@ app.use('*', cors({
   origin: [
     'https://service-client-7pw.pages.dev',
     'https://render-imageproxy.onrender.com',
-    'http://localhost:5173',
-    'http://localhost:8081',
-    'http://localhost:8082',
   ],
   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowHeaders: ['Content-Type', 'Authorization'],
@@ -34,47 +32,63 @@ app.get('/health', (c) => {
   }, 200)
 })
 
-// Custom rate limit store using TTL
-class KVRateLimitStore implements Store {
+class D1RateLimitStore implements Store {
   constructor(
-    private kv: KVNamespace,
-    private ttlSeconds: number
+    private db: D1Database,
+    private ttlSeconds: number,
   ) { }
 
   async increment(key: string) {
-    const stored = await this.kv.get(key, { type: 'json' }) as { count: number } | null
-    if (stored) {
-      stored.count++
-      await this.kv.put(key, JSON.stringify(stored), { expirationTtl: this.ttlSeconds })
-      return {
-        success: stored.count <= 100,
-        limit: 100,
-        remaining: Math.max(0, 100 - stored.count),
-        totalHits: stored.count,
-        resetTime: new Date(Date.now() + this.ttlSeconds * 1000)
-      }
-    } else {
-      await this.kv.put(key, JSON.stringify({ count: 1 }), { expirationTtl: this.ttlSeconds })
+    const now = Math.floor(Date.now() / 1000);
+    const expires = now + this.ttlSeconds;
+
+    const row = await this.db.prepare(`
+      SELECT count, expires_at FROM image_rate_limit WHERE key = ?
+    `).bind(key).first<{ count: number, expires_at: number }>();
+
+    if (!row || row.expires_at < now) {
+      await this.db.prepare(`
+        INSERT OR REPLACE INTO image_rate_limit (key, count, expires_at)
+        VALUES (?, ?, ?)
+      `).bind(key, 1, expires).run();
+
       return {
         success: true,
         limit: 100,
         remaining: 99,
         totalHits: 1,
-        resetTime: new Date(Date.now() + this.ttlSeconds * 1000)
-      }
+        resetTime: new Date(expires * 1000),
+      };
+    }
+
+    const newCount = row.count + 1;
+    await this.db.prepare(`
+      UPDATE image_rate_limit SET count = ?, expires_at = ? WHERE key = ?
+    `).bind(newCount, expires, key).run();
+
+    return {
+      success: newCount <= 100,
+      limit: 100,
+      remaining: Math.max(0, 100 - newCount),
+      totalHits: newCount,
+      resetTime: new Date(expires * 1000),
+    };
+  }
+
+  async decrement(key: string) {
+    const row = await this.db.prepare(`
+      SELECT count FROM image_rate_limit WHERE key = ?
+    `).bind(key).first<{ count: number }>();
+
+    if (row && row.count > 0) {
+      await this.db.prepare(`
+        UPDATE image_rate_limit SET count = ? WHERE key = ?
+      `).bind(row.count - 1, key).run();
     }
   }
 
-  async decrement(key: string): Promise<void> {
-    const stored = await this.kv.get(key, { type: 'json' }) as { count: number } | null
-    if (stored && stored.count > 0) {
-      stored.count--
-      await this.kv.put(key, JSON.stringify(stored), { expirationTtl: this.ttlSeconds })
-    }
-  }
-
-  async resetKey(key: string): Promise<void> {
-    await this.kv.delete(key)
+  async resetKey(key: string) {
+    await this.db.prepare(`DELETE FROM image_rate_limit WHERE key = ?`).bind(key).run();
   }
 }
 
@@ -120,20 +134,8 @@ app.use('*', async (c, next) => {
 
   const fingerprint = `${ip}::${ua}`
 
-  // Burst limiter: 10 requests per 5 seconds
-  const burstKey = `burst:${fingerprint}`
-  const burst = (await c.env.CACHE.get(burstKey, { type: 'json' }) as { count: number } | null) || { count: 0 }
-  burst.count++
-
-  if (burst.count > 10) {
-    console.warn(`[BURST] ${fingerprint} exceeded burst limit`)
-    return c.json({ error: 'Too many requests (burst)' }, 429)
-  }
-
-  await c.env.CACHE.put(burstKey, JSON.stringify(burst), { expirationTtl: 60 })
-
   // General rate limiter: 100 requests per 65 seconds
-  const store = new KVRateLimitStore(c.env.CACHE, 65)
+  const store = new D1RateLimitStore(c.env.DB, 65)
   return rateLimiter({
     windowMs: 65_000,
     limit: 100,

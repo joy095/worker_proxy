@@ -9,10 +9,11 @@ binding = "R2_BUCKET_NAME"
 bucket_name = "service-app"                       # production bucket
 preview_bucket_name = "r2-worker-proxy-preview"   # preview bucket
 
-[[kv_namespaces]]
-binding = "CACHE"
-id = "da719b9f938f464680ce5e32a384624e"
-preview_id = "afcb290639f6461480fb06cfa3c78a6b"
+# D1 database binding (used for general rate limiting)
+[[d1_databases]]
+binding = "DB"
+database_name = "ratelimite"
+database_id = "bcc9a1eb-e1e5-4d34-a302-5de8d45d0b99"  
 
 
 [observability]
