@@ -145,6 +145,53 @@ app.use('*', async (c, next) => {
   })(c as Context, next)
 })
 
+// Scheduled cleanup job - runs every 10 minutes
+app.get('/_scheduled/cleanup', async (c) => {
+  const result = await cleanupOldFiles(c.env.R2_BUCKET_NAME, c.env.DB)
+  return c.json(result)
+})
+
+export async function scheduled(
+  controller: ScheduledController,
+  env: Bindings,
+  ctx: ExecutionContext
+): Promise<void> {
+  if (controller.cron === '*/10 * * * *') {
+    // Run cleanup every 10 minutes
+    await cleanupOldFiles(env.R2_BUCKET_NAME, env.DB)
+  }
+}
+
+async function cleanupOldFiles(bucket: R2Bucket, db: D1Database): Promise<{ deleted: string[] }> {
+  const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000).getTime()
+
+  // Get all uploads from R2
+  const list = await bucket.list({ prefix: 'uploads/' })
+  const keysToDelete: string[] = []
+
+  for (const obj of list.objects) {
+    // Skip if not older than 30 mins
+    if (obj.uploaded.getTime() > thirtyMinutesAgo) continue
+
+    // Check if there's a corresponding DB entry with expires_at
+    const row = await db.prepare(`
+      SELECT expires_at FROM image_metadata WHERE key = ?
+    `).bind(obj.key).first<{ expires_at: number | null }>()
+
+    // If no DB record or no expires_at, or expires_at is in the past
+    if (!row || !row.expires_at || row.expires_at * 1000 < Date.now()) {
+      keysToDelete.push(obj.key)
+    }
+  }
+
+  if (keysToDelete.length > 0) {
+    await bucket.delete(keysToDelete)
+    console.log(`Deleted ${keysToDelete.length} old files:`, keysToDelete)
+  }
+
+  return { deleted: keysToDelete }
+}
+
 // File proxy from R2
 app.get('/uploads/*', async (c) => {
   const urlPath = decodeURIComponent(c.req.path.replace(/^\/uploads\//, ''))

@@ -15,6 +15,10 @@ binding = "DB"
 database_name = "ratelimite"
 database_id = "bcc9a1eb-e1e5-4d34-a302-5de8d45d0b99"  
 
+[[triggers]]
+type = "cron"
+name = "cleanup"
+cron = "*/30 * * * *"
 
 [observability]
 enabled = true
