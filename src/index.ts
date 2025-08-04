@@ -9,7 +9,6 @@ type Bindings = {
   DB: D1Database
 }
 
-
 const app = new Hono<{ Bindings: Bindings }>()
 
 // CORS Middleware - Using hono/cors (cleaner approach)
@@ -91,6 +90,48 @@ class D1RateLimitStore implements Store {
     await this.db.prepare(`DELETE FROM image_rate_limit WHERE key = ?`).bind(key).run();
   }
 }
+// --- Add the cleanup function here ---
+// Function to delete expired entries from image_rate_limit table
+// Considers entries expired if their expires_at is more than 30 minutes (1800 seconds) old.
+async function cleanupExpiredRateLimitEntries(db: D1Database): Promise<{ deletedCount: number, message: string }> {
+  const now = Math.floor(Date.now() / 1000);
+  const expiryThreshold = now - (30 * 60); // 30 minutes ago in seconds
+
+  try {
+    const result = await db.prepare(`
+      DELETE FROM image_rate_limit WHERE expires_at < ?
+    `).bind(expiryThreshold).run();
+
+    const deletedCount = result.meta?.changes ?? 0;
+    const message = `Deleted ${deletedCount} expired rate limit entries.`;
+    console.log(`[RATE_LIMIT_CLEANUP] ${message}`);
+    return { deletedCount, message };
+  } catch (err) {
+    const errorMessage = `Failed to delete expired rate limit entries: ${err instanceof Error ? err.message : 'Unknown error'}`;
+    console.error(`[RATE_LIMIT_CLEANUP_ERROR] ${errorMessage}`);
+    return { deletedCount: 0, message: errorMessage };
+  }
+}
+
+export async function scheduled(
+  controller: ScheduledController,
+  env: Bindings, // Use your existing Bindings type
+  ctx: ExecutionContext
+): Promise<void> {
+  // You can use controller.cron to differentiate between multiple scheduled events if needed
+  // For now, we assume this function is triggered for rate limit cleanup
+
+  console.log("[SCHEDULED] Starting automatic cleanup of expired rate limit entries...");
+  try {
+    const result = await cleanupExpiredRateLimitEntries(env.DB); // Use the DB from env
+    console.log("[SCHEDULED] Automatic rate limit cleanup completed:", result);
+    // You can add observability/logging here if needed
+  } catch (error) {
+    console.error("[SCHEDULED] Error during automatic rate limit cleanup:", error);
+    // Handle errors appropriately (e.g., sentry logging, ignore, etc.)
+    // The scheduled event will still be marked as complete even if this throws
+  }
+}
 
 // Rate-limiting + bot protection middleware
 app.use('*', async (c, next) => {
@@ -144,53 +185,6 @@ app.use('*', async (c, next) => {
     store,
   })(c as Context, next)
 })
-
-// Scheduled cleanup job - runs every 10 minutes
-app.get('/_scheduled/cleanup', async (c) => {
-  const result = await cleanupOldFiles(c.env.R2_BUCKET_NAME, c.env.DB)
-  return c.json(result)
-})
-
-export async function scheduled(
-  controller: ScheduledController,
-  env: Bindings,
-  ctx: ExecutionContext
-): Promise<void> {
-  if (controller.cron === '*/10 * * * *') {
-    // Run cleanup every 10 minutes
-    await cleanupOldFiles(env.R2_BUCKET_NAME, env.DB)
-  }
-}
-
-async function cleanupOldFiles(bucket: R2Bucket, db: D1Database): Promise<{ deleted: string[] }> {
-  const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000).getTime()
-
-  // Get all uploads from R2
-  const list = await bucket.list({ prefix: 'uploads/' })
-  const keysToDelete: string[] = []
-
-  for (const obj of list.objects) {
-    // Skip if not older than 30 mins
-    if (obj.uploaded.getTime() > thirtyMinutesAgo) continue
-
-    // Check if there's a corresponding DB entry with expires_at
-    const row = await db.prepare(`
-      SELECT expires_at FROM image_metadata WHERE key = ?
-    `).bind(obj.key).first<{ expires_at: number | null }>()
-
-    // If no DB record or no expires_at, or expires_at is in the past
-    if (!row || !row.expires_at || row.expires_at * 1000 < Date.now()) {
-      keysToDelete.push(obj.key)
-    }
-  }
-
-  if (keysToDelete.length > 0) {
-    await bucket.delete(keysToDelete)
-    console.log(`Deleted ${keysToDelete.length} old files:`, keysToDelete)
-  }
-
-  return { deleted: keysToDelete }
-}
 
 // File proxy from R2
 app.get('/uploads/*', async (c) => {
