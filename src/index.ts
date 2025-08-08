@@ -148,15 +148,8 @@ app.use('*', async (c, next) => {
   const hasImageAccept = accept.toLowerCase().includes('image');
   const isLikelyImageRequest = isUploadRequest || hasImageAccept; // Prioritize path check
 
-  // 2. More nuanced bot detection
-  //    - Only apply strict UA checks if it doesn't look like a normal image request
   const isBlockedUA = /python|curl|bot|spider|crawler|scraper/i.test(ua) && !isLikelyImageRequest;
 
-  // 3. Block only if:
-  //    - No User-Agent AND it's not an obvious image request (extra caution)
-  //    - Blocked User-Agent AND it's not an obvious image request
-  //    - No Accept header AND it's not an obvious image request
-  //    - (Optional) Add extra checks for malformed requests if needed
   if (
     (!ua && !isLikelyImageRequest) ||
     isBlockedUA ||
@@ -187,51 +180,80 @@ app.use('*', async (c, next) => {
 })
 
 // File proxy from R2
-app.get('/uploads/*', async (c) => {
-  const urlPath = decodeURIComponent(c.req.path.replace(/^\/uploads\//, ''))
-  const key = `uploads/${urlPath}`
+// Serve any file: request path = R2 key
+app.get('/', async (c) => {
+  return c.json({ message: 'Visit /path to serve R2 object at "path"' }, 200)
+})
 
-  if (!key || key === 'uploads/') {
-    console.error(`[UPLOADS] Invalid path: ${key}`)
-    return c.json({ error: 'Invalid path', path: c.req.path, key }, 400)
+app.get('/*', async (c) => {
+  const key = c.req.path.slice(1) // Remove leading `/`
+  if (!key) {
+    return c.json({ error: 'No path provided' }, 400)
   }
 
   try {
     const object = await c.env.R2_BUCKET_NAME.get(key)
-    if (!object?.body) {
-      console.error(`[UPLOADS] File not found in R2: ${key}`)
-
-      // Debug: List files with similar prefix
-      const list = await c.env.R2_BUCKET_NAME.list({ prefix: `uploads/${urlPath.split('/')[0]}` })
-      console.log(`[UPLOADS] Similar files:`, list.objects.map(o => o.key))
-
-      return c.json({ error: 'File not found', key, similarFiles: list.objects.map(o => o.key) }, 404)
+    if (!object) {
+      return c.json({ error: 'Not found' }, 404)
     }
 
-    const filename = key.split('/').pop() || 'download'
-    console.log(`[UPLOADS] Successfully serving: ${key}`)
+    const contentType = object.httpMetadata?.contentType || guessContentType(key) || 'application/octet-stream'
 
-    return new Response(object.body, {
-      headers: {
-        'Content-Type': object.httpMetadata?.contentType || 'application/octet-stream',
-        'Content-Disposition': `inline; filename="${filename}"`,
-        'Cache-Control': 'public, max-age=86400',
-        'X-Proxy-Filename': filename,
-      },
-    })
+    const headers = new Headers()
+    headers.set('Content-Type', contentType)
+    headers.set('Cache-Control', 'public, max-age=86400')
+    headers.set('X-Content-Type-Options', 'nosniff')
+
+    return new Response(object.body, { headers })
   } catch (err) {
-    console.error('[UPLOADS] R2 Error:', err)
-    return c.json({ error: 'Failed to fetch file', details: err instanceof Error ? err.message : 'Unknown error' }, 500)
+    return c.json({ error: 'Internal error' }, 500)
   }
 })
 
+// Optional: POST to upload
+app.post('/*', async (c) => {
+  const key = c.req.path.slice(1)
+  if (!key) return c.json({ error: 'No key provided' }, 400)
+
+  const body = await c.req.arrayBuffer()
+  const contentType = c.req.header('content-type') || guessContentType(key) || 'application/octet-stream'
+
+  await c.env.R2_BUCKET_NAME.put(key, body, {
+    httpMetadata: { contentType },
+  })
+
+  return c.json({ success: true, key, contentType })
+})
+
+function guessContentType(key: string): string | null {
+  const ext = key.split('.').pop()?.toLowerCase()
+  switch (ext) {
+    case 'jpg': case 'jpeg': return 'image/jpeg'
+    case 'png': return 'image/png'
+    case 'webp': return 'image/webp'
+    case 'gif': return 'image/gif'
+    case 'svg': return 'image/svg+xml'
+    case 'avif': return 'image/avif'
+    case 'ico': return 'image/x-icon'
+    default: return null
+  }
+}
+
 // Debug route to list uploaded files
 app.get('/debug/list', async (c) => {
+  const prefix = c.req.query('prefix') || undefined // Support optional prefix filtering
   try {
-    const list = await c.env.R2_BUCKET_NAME.list({ prefix: 'uploads/' })
+    const list = await c.env.R2_BUCKET_NAME.list({ prefix })
     return c.json({
       count: list.objects.length,
-      keys: list.objects.map((obj) => obj.key),
+      truncated: list.truncated,
+      objects: list.objects.map((obj) => ({
+        key: obj.key,
+        size: obj.size,
+        etag: obj.etag,
+        uploaded: obj.uploaded,
+        httpMetadata: obj.httpMetadata,
+      })),
     })
   } catch (err) {
     console.error('[Debug Error]', err)
