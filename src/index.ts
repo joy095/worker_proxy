@@ -16,6 +16,7 @@ app.use('*', cors({
   origin: [
     'https://service-client-7pw.pages.dev',
     'https://render-imageproxy.onrender.com',
+    'http://localhost:5173',
   ],
   allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowHeaders: ['Content-Type', 'Authorization'],

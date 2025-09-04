@@ -15,7 +15,6 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "packageManager": "pnpm@10.5.2",
   "dependencies": {
     "@aws-sdk/client-s3": "^3.828.0",
     "@hono-rate-limiter/cloudflare": "^0.2.2",
