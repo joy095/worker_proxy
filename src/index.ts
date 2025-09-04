@@ -14,7 +14,7 @@ const app = new Hono<{ Bindings: Bindings }>()
 // CORS Middleware
 app.use('*', cors({
   origin: [
-    'https://service-client-7pw.pages.dev',
+    'https://mail-2.pages.dev',
     'https://render-imageproxy.onrender.com',
     'http://localhost:5173',
   ],
